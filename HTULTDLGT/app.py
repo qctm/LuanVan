@@ -1,3 +1,4 @@
+import os
 import sys
 import cv2
 from PyQt5.QtWidgets import QApplication
@@ -24,30 +25,32 @@ global start
 class MainWindow(QWidget):
     # class constructor
     def __init__(self):
-        self.videopath = "E:/LuanVan/Videos/th.mp4"
+        self.videopath = "E:/LuanVan/HTULTDLGT/Videos/th.mp4"
         self.area_speedcal = None 
-        # call QWidget constructor
         super().__init__()
-        self.baseUI = UID() # load GUI
-        # self.model = loadmodel() # load YOLO model
+        self.baseUI = UID()
+
         self.baseUI.setupUi(self)
-        # create a timer
         self.timer = QTimer()
-        # set timer timeout callback function
+        self.timer_2 = QTimer()
+
         self.timer.timeout.connect(self.run)
+        self.timer_2.timeout.connect(self.preview)
         self.baseUI.START.clicked.connect(self.start_bt)
         self.baseUI.PAUSE.clicked.connect(self.pause)
         self.baseUI.RESUME.clicked.connect(self.resume)
-        self.baseUI.CLOSE.clicked.connect(self.close)
+        self.baseUI.STOP.clicked.connect(self.stop)
         self.baseUI.GETFILE.clicked.connect(self.getvideofile)
-        self.baseUI.sobt.clicked.connect(self.add2lines)
+        self.baseUI.preview_video.clicked.connect(self.preview_button)
+        self.baseUI.SO_add_lines_btn.clicked.connect(self.add2lines)
+        self.baseUI.SO_add_roi_btn.clicked.connect(self.addroi)
         self.baseUI.GF_le.setText(self.videopath)
-        self.baseUI.speedCal_dis_le.setText("20")
-        self.area_speedcal = load_indexfromcsv(self.videopath)
+        self.baseUI.speedCal_dis_le.setText("10")
+        # self.baseUI.ovb_b1.toggled.connect(self)
+        self.family_directory = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.FPS = None
-
+        self.isSaveVideo = False
         pixmap = QPixmap('E:/LuanVan/HTULTDLGT/IMG/no-video.jpg')
-        # qImg = QImage(pixmap.data, 852, 480, 3*480, QImage.Format_RGB888)
         self.baseUI.imgLabel_1.setPixmap(pixmap)
         self.setWindowIcon(QIcon('logo.png'))
     
@@ -60,93 +63,114 @@ class MainWindow(QWidget):
         else:
             print('>0')
 
-    def close(self):
+    def stop(self):
         self.timer.stop()
         self.detector = None
         self.speed_calculator = None
+        self.baseUI.PAUSE.setEnabled(False)
+        self.baseUI.RESUME.setEnabled(False)
+        self.tracker = None
+        self.speed_calculator = None
+        if self.isSaveVideo:
+            print('Da luu video ket qua')
+            self.video_writer.release()
+            self.video_writer = None
         
     def start_bt(self):
-        tracker_name = self.baseUI.tracking_mt_box.currentText()
-        if tracker_name == 'DeepSORT':
-            self.detector = DeepSORT_Tracker()
-        if tracker_name == 'SORT':
-            self.detector = SORT_Tracker()
-        self.load_area_speedcal()
-        m = self.baseUI.speedCal_dis_le.text()
-        self.speed_calculator = SpeedCalculator(int(m), self.y_line2 - self.y_line1)
-        print('-> ')
+        self.video_writer = cv2.VideoWriter(self.family_directory +'\\Videos\\result_video\\' + Path(self.videopath).stem + '_result.avi', cv2.VideoWriter_fourcc(*'MJPG'), 30, (854,480))
+        print('Khoi tao video writer')
         # if timer is stopped
         if not self.timer.isActive():
-            # create video capture
-            # self.cap = cv2.VideoCapture(self.videopath)
             self.cap = loadVideo(self.videopath)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            # start timer
-            self.timer.start(30)
-            # print(self.timer.start(30))
+            self.FPS = round(self.cap.get(cv2.CAP_PROP_FPS))
+            self.total_frame = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.f_no = 1
+            self.timer.start(self.FPS)
             self.logic = True
-
-        # if timer is started
         else:
-            # stop timer
             self.timer.stop()
-            # release video capture
             self.cap.release()
+
+        csv_fp = self.family_directory +'\\Videos\\csv\\'
+        self.lines = load_fromcsv(csv_fp + Path(self.videopath).stem + '_lines.csv')
+        self.roi = load_fromcsv(csv_fp + Path(self.videopath).stem + '_roi.csv')
+        
+        self.yolomodel = torch.hub.load('ultralytics/yolov5', 'custom', self.family_directory + '/Model_Yolov5/100e.pt')
+        self.yolomodel.conf = 0.5
+        self.names = self.yolomodel.names
+        self.tracker = DeepSORT_Tracker(self.roi)
+        m = self.baseUI.speedCal_dis_le.text() # khoang cach giua 2 lines tinh theo met (gia dinh)
+        # cachtinh = self.baseUI.SO_useOpt_box.currentIndex() # 0: 2:Lines    1: ROI
+        self.speed_calculator = SpeedCalculator(int(m), self.lines, csv_fp + Path(self.videopath).stem + '_log.csv', self.FPS)
+
+        self.baseUI.PAUSE.setEnabled(True)
+        self.baseUI.RESUME.setEnabled(True)
+        self.baseUI.STOP.setEnabled(True)
+        if self.timer_2.isActive():
+            self.timer_2.stop()
+        
 
     def run(self):
         global start
         colorR = (0,0,255)
         colorB = (255,0,0)
-        offset = 10     
+        offset = 10
 
         ret, frame = self.cap.read()
         if not ret:
+            self.stop()
             return False
-        # nhan dang va truy vet
+        frame = cv2.resize(frame, (854,480))
+        detect_results = self.yolomodel(frame)
+        results = self.tracker.update_track(detect_results, frame)
 
-        start_time = time.time()
-        results = self.detector.update_track(frame)
-        end_time = time.time()
-        self.FPS = round(1.0/(end_time-start_time))
-
+        list_v_inroi = []
         # tinh van toc
         for result in results:
-            x1, y1, x2, y2, id = result
+            x1, y1, x2, y2, id , class_id= result
             x1, y1, x2, y2, id = int(x1), int(y1), int(x2), int(y2), int(id)
             w, h = x2 -x1, y2-y1
             cx = (x1+x2)//2
-            cy = (y1+y2)//2
-            cvzone.putTextRect(frame, f' {int(id)}', (max(0, x1),max(35,y1)), 
-                                    scale=1, thickness=1, offset=0)
-            
-            if cy < (self.y_line2 - offset) and cy > (self.y_line1 - offset) and cx < self.x2_line1 and cx > self.x1_line1 :
-                self.speed_calculator.add(id, cx, cy, time.time())
-            if cy < (self.y_line2 + offset) and cy > (self.y_line2 - offset) and cx < self.x2_line2 and cx > self.x1_line2:
-                self.speed_calculator.calculate(id, self.FPS)
-                # self.speed_calculator.test(id)
-            if id in self.speed_calculator.speeds:
-                cvzone.putTextRect(frame, f' {int(self.speed_calculator.speeds[id])} Km/h', (max(0, x1),max(35,y1)), 
-                                    scale=1, thickness=1, offset=0)
+            cy = y2
+            if isInsideArea((x1+x2)/2, (y1+y2)/2, self.roi):
+                list_v_inroi.append(id)
+                if cy < (self.lines[0][1] + offset) and cy > (self.lines[0][1] - offset):
+                    self.speed_calculator.add_SFrame(id, cx, cy, self.f_no)
+                if cy < (self.lines[2][1] + offset) and cy > (self.lines[2][1] - offset):
+                    self.speed_calculator.add_EFrame(id, cx, cy, self.f_no)
+                if cy > (self.lines[2][1] + offset):
+                    self.speed_calculator.update(id, class_id)
+                if id in self.speed_calculator.speeds:
+                    cvzone.putTextRect(frame, f' {int(self.speed_calculator.speeds[id])} Km/h', (max(0, x1),max(35,y1)), 
+                                        scale=2, thickness=2, offset=0)
+                else: cvzone.putTextRect(frame, f' {int(id)}_{str(self.names[class_id])}', (max(0, x1),max(35,y1)), 
+                                        scale=1, thickness=1,offset=0)
+                cv2.circle(frame, (cx, cy), 2, (255,0,0),2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colorB, 1)
 
-            cv2.circle(frame, (cx, cy), 2, (255,0,0),2)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), colorB, 1)
-            
+        self.speed_calculator.update_current_speed(list_v_inroi)
 
-        # cv2.putText(frame, 'FPS: ' + str(round(vfps)), (50, 90), cv2.FONT_HERSHEY_PLAIN, 3, (0,0,255),3)
-        # cv2.putText(frame, 'AVG SPEED: ' + str(round(speed.avg_speed, 2)) + "Km/h", (50, 150), cv2.FONT_HERSHEY_PLAIN, 3, colorR,3)
-        # cv2.imshow('FRAME', frame)
-
-        # image = imutils.resize(image, width=852)
-        cv2.putText(frame, 'FPS: ' + str(self.FPS), (50, 90), cv2.FONT_HERSHEY_PLAIN, 3, colorR,3)
-        cv2.line(frame, (self.pointA[0], self.pointA[1]), (self.pointB[0], self.pointA[1]), colorR, 2)
-        cv2.line(frame, (self.pointC[0], self.pointC[1]), (self.pointD[0], self.pointC[1]), colorR, 2)
-        self.baseUI.lable1.setText(str(self.speed_calculator.avg_speed)+" Km/h")
-
+        # cv2.putText(frame, f'{str(self.f_no)} / {str(self.total_frame)}', (50, 90), cv2.FONT_HERSHEY_PLAIN, 3, colorR,3)
+        cv2.line(frame, (self.lines[0][0], self.lines[0][1]), (self.lines[1][0], self.lines[1][1]), colorR, 2)
+        cv2.line(frame, (self.lines[2][0], self.lines[2][1]), (self.lines[3][0], self.lines[3][1]), colorR, 2)
+        # cv2.polylines(frame, [np.array(self.roi, np.int32)], True, colorB, 2)
+        self.baseUI.speed_avg_lable1.setText(str(self.speed_calculator.avg_speed)+" Km/h")
+        self.baseUI.speed_current_lable1.setText(str(self.speed_calculator.cur_avg_speed)+" Km/h")
+        sf = frame.copy()
+        cv2.rectangle(sf, (0, 0), (200, 100), (150,0,0), -1)
+        cv2.putText(sf, f'Frame: {str(self.f_no)} / {str(self.total_frame)}', (10, 20), cv2.FONT_HERSHEY_PLAIN, 1, (0,0,255),2)
+        cv2.putText(sf, f'VTTB: {str(self.speed_calculator.avg_speed)} Km/h', (10, 45), cv2.FONT_HERSHEY_PLAIN, 1, (0,0,255),2)
+        cv2.putText(sf, f'VTTBTT: {str(self.speed_calculator.cur_avg_speed)} Km/h', (10, 70), cv2.FONT_HERSHEY_PLAIN, 1, (0,0,255),2)
+        cv2.putText(sf, self.speed_calculator.last, (10, 95), cv2.FONT_HERSHEY_PLAIN, 1, (0,0,255),2)
+        
+        self.video_writer.write(sf)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         height, width, channel = frame.shape
         step = channel * width
         qImg = QImage(frame.data, width, height, step, QImage.Format_RGB888)
         self.baseUI.imgLabel_1.setPixmap(QPixmap.fromImage(qImg))
+        self.baseUI.framerun.setText(f'{str(self.f_no)}/{str(self.total_frame)}')
+        self.f_no+=1
        
     def getvideofile(self):
         filter_name = 'mp4 (*.mp4*)'
@@ -158,43 +182,40 @@ class MainWindow(QWidget):
         self.baseUI.GF_le.setText(str(filepath[0]))
         self.videopath = str(filepath[0])
         self.video = 0 if self.videopath == None else self.videopath
-        self.preview()
+        # self.preview()
+
+    def preview_button(self):
+        if not self.timer_2.isActive():
+            print('Xem truoc video')
+            self.cap = loadVideo(self.videopath)
+            self.timer_2.start(30)
+            self.logic = True
+        else:
+            self.timer_2.stop()
+            self.cap.release()
 
     def preview(self):
-        f = get_1_frame(self.videopath)
-        if self.area_speedcal:
-            self.load_area_speedcal()
-            cv2.putText(f, "Line 1", (self.pointA[0], self.pointA[1]), cv2.FONT_HERSHEY_PLAIN, 1.2, (0,0,255),2)
-            cv2.line(f, (self.pointA[0], self.pointA[1]), (self.pointB[0], self.pointB[1]), (100, 100, 255), 2)
-            #line 1
-            cv2.putText(f, "Line 2", (self.pointC[0], self.pointC[1]), cv2.FONT_HERSHEY_PLAIN, 1.2, (0,0,255),2)
-            cv2.line(f, (self.pointC[0], self.pointC[1]), (self.pointD[0], self.pointD[1]), (14, 200, 255), 2)
-        f = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-        height, width, channel = f.shape
+        ret, frame = self.cap.read()
+        if not ret:
+            self.timer_2.stop()
+            return False
+        frame = cv2.resize(frame, (854,480))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channel = frame.shape
         step = channel * width
-        qImg = QImage(f.data, width, height, step, QImage.Format_RGB888)
+        qImg = QImage(frame.data, width, height, step, QImage.Format_RGB888)
         self.baseUI.imgLabel_1.setPixmap(QPixmap.fromImage(qImg))
-
-
-    def load_area_speedcal(self):
-        self.area_speedcal = load_indexfromcsv(self.videopath)
-        if self.area_speedcal:
-            self.pointA, self.pointB, self.pointC, self.pointD = self.area_speedcal
-            self.x1_line1, self.x2_line1, self.x1_line2, self.x2_line2 = self.pointA[0], self.pointB[0], self.pointC[0], self.pointD[0]
-            self.y_line1, self.y_line2 = self.pointA[1], self.pointC[1]
-
+    
     def add2lines(self):
         print("Ve 2 doan thang len frame")
         save_path = './HTULTDLGT/Videos/csv/'
         add_new_2lines(self.videopath, save_path)
-        self.area_speedcal = load_indexfromcsv(self.videopath)
-        self.preview()
-        # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # height, width, channel = frame.shape
-        # step = channel * width
-        # qImg = QImage(frame.data, width, height, step, QImage.Format_RGB888)
-        # self.baseUI.imgLabel_1.setPixmap(QPixmap.fromImage(qImg))
     
+    def addroi(self):
+        print("Them roi")
+        csv_fpath = self.family_directory +'\\Videos\\csv\\'
+        add_new_roi(self.videopath, csv_fpath)
+
 
 def main():
     app = QApplication(sys.argv)

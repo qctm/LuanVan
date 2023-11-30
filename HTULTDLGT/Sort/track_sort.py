@@ -10,7 +10,7 @@ import time
 
 class SORT_Tracker():
     def __init__(self):
-        self.yolomodel = torch.hub.load('ultralytics/yolov5', 'custom', 'E:/TEST/0929/DeepSort/best.pt')
+        self.yolomodel = torch.hub.load('ultralytics/yolov5', 'custom', 'E:/LuanVan/HTULTDLGT/best.pt')
         self.yolomodel.eval()
         self.tracker = Sort(max_age=20, min_hits=2, iou_threshold=0.3)
 

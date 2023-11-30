@@ -8,7 +8,7 @@ import cv2
 import cvzone
 import torch
 import torch.backends.cudnn as cudnn
-
+import numpy as np
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.downloads import attempt_download
 from yolov5.models.common import DetectMultiBackend
@@ -100,24 +100,17 @@ def yolov5_deepsort_tracking():
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--yolo_model', nargs='+', type=str, default='E:/TEST/0929/DeepSort/best.pt', help='model.pt path(s)')
-    parser.add_argument('--deep_sort_model', type=str, default='osnet_x0_25')
-    parser.add_argument('--source', type=str, default='E:/TEST/0929/DeepSort/videos/th.mp4', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--deep_sort_model', type=str, default='osnet_x0_25') #osnet_x0_25
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[480, 852], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--show-vid', action='store_false', help='display tracking video results')
-    parser.add_argument('--save-vid', action='store_false', help='save video tracking results')
-    parser.add_argument('--save-txt', action='store_true', help='save MOT compliant results to *.txt')
-    # class 0 is person, 1 is bycicle, 2 is car... 79 is oven
-    parser.add_argument('--classes', nargs='+', type=int, default=4, help='filter by class: --class 0, or --class 16 17')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--evaluate', action='store_true', help='augmented inference')
-    parser.add_argument("--config_deepsort", type=str, default="E:/TEST/0929/DeepSort/deep_sort/configs/deep_sort.yaml")
+    parser.add_argument("--config_deepsort", type=str, default="E:\LuanVan\HTULTDLGT\DeepSort\deep_sort\configs\deep_sort.yaml")
     parser.add_argument("--half", action="store_true", help="use FP16 half-precision inference")
     parser.add_argument('--visualize', action='store_true', help='visualize features')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detection per image')
@@ -130,7 +123,7 @@ def parse_opt():
     return opt
 
 class DeepSORT_Tracker():
-    def __init__(self):
+    def __init__(self, roi):
         opt = parse_opt()
         cfg = get_config()
         cfg.merge_from_file(opt.config_deepsort)
@@ -139,32 +132,14 @@ class DeepSORT_Tracker():
                             max_iou_distance=cfg.DEEPSORT.MAX_IOU_DISTANCE,
                             max_age=cfg.DEEPSORT.MAX_AGE, n_init=cfg.DEEPSORT.N_INIT, nn_budget=cfg.DEEPSORT.NN_BUDGET,
                             )
-        self.yolomodel = torch.hub.load('ultralytics/yolov5', 'custom', 'E:/TEST/0929/DeepSort/best.pt')
-        self.yolomodel.eval()
-        self.names = self.yolomodel.names
-        
-    def update_track(self, frame):       
-        time_run = [0.0, 0.0]
-        t1 = time_sync()
-        results = self.yolomodel(frame)
-        time_run[0] = time_sync() - t1
-
-        r = results.xyxy[0]
+        self.roi = roi
+     
+    def update_track(self, detect_results, frame):       
+        r = detect_results.xyxy[0]
         xywhs = xyxy2xywh(r[:, 0:4])
         confs = r[:, 4]
         clss = r[:, 5]
-
-        # DeepSORT track
-        t2 = time_sync()
         outputs = self.deepsort.update(xywhs.cpu(), confs.cpu(), clss.cpu(), frame)
-        time_run[1] = time_sync() - t2
-
         return outputs 
-        # for output in outputs:
-        #     x1, y1, x2, y2, track_id, class_id = output
-        #     cv2.rectangle(frame, (x1, y1), (x2, y2), (255,0,0),2)
-        #     cvzone.putTextRect(frame, f' {int(track_id)}{str(self.names[class_id])}', (max(0, x1),max(35,y1)), 
-        #                             scale=1, thickness=1, offset=0)                
-            
-        #     print("YOLO: {:.3f}s --- DeepSORT: {:.3f}s".format(time_run[0], time_run[1]))
-        # return frame
+    
+    
